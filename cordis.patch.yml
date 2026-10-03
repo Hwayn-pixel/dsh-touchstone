@@ -1,0 +1,6 @@
+# dsh-touchstone — bundle patch layer (declared by dsh.bundle.patch).
+# Registers this plugin's row into a profile's plugin roster.
+# NOTE: this name must equal the package name (DSH plugin ids are unscoped).
+- insert:
+    - id: ui-touchstone
+      name: 'dsh-touchstone'
