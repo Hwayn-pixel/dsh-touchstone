@@ -1,190 +1,179 @@
-# dsh-touchstone · 试金石
+# dsh-touchstone
 
-> **给 DeepSeek Harness 的「自改造」补上评测这一环。**
-> 改一版，到底变好没有？—— 同一批用例，分别按「现状」和「候选」各跑一次，打分、对账；**好就留，不好就撤。**
+> **The missing evaluation half of DeepSeek Harness's self-evolution.**
+> You changed something — did it actually get better? Run the same **golden cases** against the current config and a **candidate**, score them, and get a before→after report. **Keep it if it improved; revert if it did not.**
 
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件 · MIT · 桌面端 / 网页版通用
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin · MIT · works on desktop **and** web
 
----
-
-## 目录
-
-- [这是什么](#这是什么)
-- [为什么需要它](#为什么需要它)
-- [5 分钟上手](#5-分钟上手)
-- [实战例子](#实战例子)
-- [四个概念](#四个概念)
-- [检查项怎么写](#检查项怎么写)
-- [跑一轮会发生什么](#跑一轮会发生什么)
-- [设置与数据存在哪](#设置与数据存在哪)
-- [它不做什么（边界）](#它不做什么边界)
-- [常见问题](#常见问题)
-- [开发](#开发)
-- [English](#english)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 ---
 
-## 这是什么
+## Contents
 
-试金石是一块**试金台**：你做任何一处改动（加一条家规、换一段提示词、调一个预设），它不是让你"凭感觉"，而是把它放到**同一批金标准用例**上，和"改动前"并排跑一遍，给你一张对账表——
+- [What it is](#what-it-is)
+- [Why you want it](#why-you-want-it)
+- [Quick start (5 minutes)](#quick-start-5-minutes)
+- [A worked example](#a-worked-example)
+- [The four ideas](#the-four-ideas)
+- [How to write checks](#how-to-write-checks)
+- [What a run does](#what-a-run-does)
+- [Settings and where data lives](#settings-and-where-data-lives)
+- [What it does *not* do (limits)](#what-it-does-not-do-limits)
+- [FAQ](#faq)
+- [Development](#development)
+
+---
+
+## What it is
+
+A **touchstone** for your agent. Whenever you make a change — add a house rule, swap a prompt, tweak a preset — instead of going on a hunch, it runs that change against the **same set of golden cases**, side by side with "before", and hands you a scorecard:
 
 ```
-用例        现状     候选     变化
-先说结论     0%      100%    +100%
+case            current   candidate   change
+lead-with-answer   0%       100%      +100%
 ```
 
-并用一句**证据化**的结论收尾：**✅ 变好了，可以留。** / **❌ 退步了，建议撤。** / **➖ 没什么差别。**
+and closes with an **evidence-based** verdict: **✅ Better, keep it.** / **❌ Regressed, revert.** / **➖ No real difference.**
 
-分数只说明这批用例上的表现——**最后拍板的还是你**。
+The score only speaks for *these* cases — **the final call is still yours.**
 
-## 为什么需要它
+## Why you want it
 
-DSH 的看家本领是「一切皆插件」：提示词、工具、预设、甚至 agent 循环，都可以随手替换。而官方也点明了下一步的关键：
+DSH's whole bet is "everything is a plugin": prompts, tools, presets, even the agent loop are meant to be swapped at will. And the official account names the missing piece:
 
-> DSH 已经把 agent 拆成了可定位、可替换的组件，**但距离真正的自进化，缺一个完整的学习闭环——提出修改、并用 Eval 评估修改到底有没有效。**
+> DSH has already split the agent into locatable, replaceable components — **but it still lacks a complete learning loop: propose a change, and use Eval to judge whether that change actually worked.**
 
-生态里已经有**撤销/回退**（改坏了能救回来），但**没有评测**（改之前先量一量）。试金石补的就是这一环。
+The ecosystem already has **undo / rollback** (recover from a bad change) but **no evaluation** (measure before you commit). dsh-touchstone fills exactly that gap.
 
-而且它很"薄"：**只借 `ctx.llm.stream()` 这一条公开缝**，不改 harness 本体，也不依赖任何内部服务——所以 0.1.x 网页版和 0.2 桌面版都能跑。
+It is deliberately thin: it only uses the public **`ctx.llm.stream()`** seam, never patches the harness, and depends on no internal services — so it runs on both DSH 0.1.x (web) and 0.2 (desktop).
 
-## 5 分钟上手
+## Quick start (5 minutes)
 
-1. **装**（选一个 profile）：
+1. **Install** (pick a profile):
    ```shell
-   dsh plugin --profile desktop add dsh-touchstone      # 桌面版
-   dsh plugin --profile web add dsh-touchstone          # 网页版
+   dsh plugin --profile desktop add dsh-touchstone      # desktop app
+   dsh plugin --profile web add dsh-touchstone          # web UI
    ```
-   装完重启 DSH。
+   Restart DSH afterwards.
 
-2. **打开**：设置（桌面端：左下角**账号菜单 → 设置**，或 `Ctrl + ,`）→ 左侧点 **🪨 试金石**。
+2. **Open it**: Settings (desktop: bottom-left **account menu → 设置**, or `Ctrl + ,`) → click **🪨 试金石** on the left.
 
-3. **写一条用例**：点「金标准用例 → **+ 加一条用例**」。
-   - **名字**：给你自己看的，比如「先说结论」。
-   - **prompt**：你会丢给 agent 的那句话，比如「介绍一下人工智能」。
-   - **检查项**：点「+ 加一条检查项」，选「**必须包含**」，填上你期望出现的词。
+3. **Add a case** — under "金标准用例 (golden cases)", click **+ 加一条用例**:
+   - **name**: for you, e.g. "lead with the answer".
+   - **prompt**: the sentence you would send to the agent, e.g. "Introduce artificial intelligence in one sentence."
+   - **check**: click **+ 加一条检查项**, choose **必须包含 (must contain)**, and type the word you expect.
 
-4. **写一个候选**：点「候选方案 → **+ 加一个候选**」。
-   - **名字**：比如「加一条家规」。
-   - **提示词**：写下你想试的那句话，比如「回答的开头必须恰好是『笔记：』四个字」。
-   - **模式**：`追加到现状`（在当前基础上加）或 `整篇替换`（换掉）。
+4. **Add a candidate** — under "候选方案", click **+ 加一个候选**:
+   - **name**, e.g. "add a prefix rule".
+   - **prompt**: the text you want to try, e.g. "Every answer must begin with exactly the four characters 「笔记：」."
+   - **mode**: `append` (on top of current) or `replace`.
 
-5. **跑**：点「候选」旁边的 **跑一遍**。
+5. **Run**: click **跑一遍 (Run)** next to the candidate.
 
-6. **看对账**：滚到「**对账**」，看逐条得分与结论。
+6. **Read the report** — scroll to **对账 (Report)** for per-case scores and the verdict.
 
-> 💡 打字是**失焦才落盘**的：写完一句话，点一下别处（或按 Tab）再松手，就会自动保存。
+> 💡 Fields **save on blur**: after typing, click elsewhere (or press Tab) and it saves automatically.
 
-## 实战例子
+## A worked example
 
-**场景**：你想给 agent 加一条"开场格式"的家规，但不确定它到底听不听。
+**You want** to add an "opening format" rule, but you don't know if the model will obey it.
 
-| 步骤 | 你会填什么 |
+| Field | Value |
 |---|---|
-| 用例 · 名字 | `开场格式` |
-| 用例 · prompt | `用一句话介绍什么是人工智能。` |
-| 用例 · 检查项 | `必须包含` → `笔记：` |
-| 候选 · 名字 | `加个开场标记` |
-| 候选 · 提示词 | `回答的开头必须恰好是「笔记：」四个字，然后紧接着继续写正文。` |
-| 候选 · 模式 | `追加到现状` |
+| case · name | `opening format` |
+| case · prompt | `Introduce artificial intelligence in one sentence.` |
+| case · check | `must contain` → `笔记：` |
+| candidate · name | `prefix marker` |
+| candidate · prompt | `Every answer must begin with exactly 「笔记：」, then continue normally.` |
+| candidate · mode | `append` |
 
-点「跑一遍」，几十秒后对账出来：
+Click **Run**. A few seconds later:
 
 ```
-加个开场标记        现状 0% → 候选 100%
-用例        现状     候选     变化
-开场格式     0%      100%    +100%
-✅ 变好了，可以留。
+prefix marker        current 0% → candidate 100%
+case             current   candidate   change
+opening format      0%        100%     +100%
+✅ Better, keep it.
 ```
 
-**它就是不给的那句话加了张"证据"**：不是"我觉得行"，是"按现状跑，这句指令没生效；按候选跑，生效了"。
+**It adds evidence to the sentence you otherwise would not have**: not "I think it works", but "under the current config the instruction had no effect; under the candidate it did."
 
-## 四个概念
+## The four ideas
 
-| 概念 | 是什么 | 备注 |
+| Idea | What | Note |
 |---|---|---|
-| **用例（Case）** | 一句 prompt + 若干检查项 | 你希望 agent 稳住的问题 |
-| **检查项（Check）** | 对输出的一条断言 | 必须包含 / 必须不含 / 匹配正则 / 模型裁判 |
-| **候选（Variant）** | 一份「要试的提示词」 | 追加 或 整篇替换；对照组是内建的「现状（不改）」 |
-| **对账（Report）** | 候选均分 − 现状均分 | 逐条 delta + 整体结论 |
+| **Case** | one prompt + some checks | a question you want the agent to stay solid on |
+| **Check** | an assertion about the output | must contain / must not contain / regex / LLM judge |
+| **Candidate (variant)** | a prompt you want to try | append or replace; the control is the built-in "current (no change)" |
+| **Report** | candidate mean − baseline mean | per-case delta + overall verdict |
 
-## 检查项怎么写
+## How to write checks
 
-| 类型 | 判定 | 什么时候用 |
+| Kind | Decision | When to use |
 |---|---|---|
-| **必须包含** | 输出里出现这段文字 | 最省事、最可复现。适合"必须出现某个词 / 结论 / 格式" |
-| **必须不含** | 输出里**不**出现这段文字 | 禁止项，比如"不许出现『抱歉』" |
-| **匹配正则** | 输出匹配这条正则 | 格式类检查，比如 `^笔记：` |
-| **模型裁判** | 另调一次模型，只回 `PASS` / `FAIL` + 一句理由 | 主观标准，比如"结论先给，再给理由" |
+| **must contain** | the output contains this text | cheapest and most reproducible; "a word / conclusion / format must appear" |
+| **must not contain** | the output does **not** contain this text | prohibitions, e.g. "no 'Sorry'" |
+| **regex** | the output matches | format checks, e.g. `^笔记：` |
+| **LLM judge** | a second model call answers `PASS` / `FAIL` + one line | subjective criteria, e.g. "conclusion first, then reasons" |
 
-> **小抄**：能用规则检查就别用模型裁判——规则的分数最可信、最可复现，裁判也是模型，会有偏差。
-> 检查项还可以设**权重**（默认 1）；跑分是加权通过率。
+> **Rule of thumb:** prefer rule checks over the LLM judge — rule scores are the most trustworthy and reproducible; the judge is also a model, with its own bias.
+> Checks can carry a **weight** (default 1); the score is a weighted pass rate.
 
-## 跑一轮会发生什么
+## What a run does
 
-1. 取出所有**启用**的用例 × 你勾选的候选（外加总是一起跑的对照组「现状」）。
-2. 对每条组合：构造一次模型调用 —— `system` = 该候选的提示词，`messages` = 该用例的 prompt —— 通过 `ctx.llm.stream()` 收全文与用量。
-3. 计分：规则检查**本地判定**；模型裁判**另调一次模型**。
-4. 存储这次跑测，返回报告。
+1. Take every **enabled** case × the candidates you ticked (plus the always-on control "current").
+2. For each pair, build one model call — `system` = the candidate's prompt, `messages` = the case prompt — and collect text and usage via `ctx.llm.stream()`.
+3. Score: rule checks **in-process**; the LLM judge makes **one more model call**.
+4. Store the run and return the report.
 
-整个过程**只读配置、只调模型**，不会改你的任何文件。
+The whole thing **only reads config and calls the model** — it never touches your files.
 
-## 设置与数据存在哪
+## Settings and where data lives
 
-- **跑测用哪个模型**：在 DSH 的设置里给 `dsh-touchstone` 配 `provider` / `model` / `temperature` / `maxOutput`，还能单独指定**裁判模型**（`judgeProvider` / `judgeModel`，留空则和跑测同款）。
-- **数据**：`$DSH_HOME/touchstone/bench.json`（`DSH_HOME` 默认 `~/.dsh`）。存用例、候选、以及最近 **40 次**跑测。
-- 想清空：直接删这个文件即可（会自动重建）。
+- **Which model to run** — configure `provider` / `model` / `temperature` / `maxOutput` for `dsh-touchstone` in DSH settings, plus optional **judge** model (`judgeProvider` / `judgeModel`; blank = same as the runner).
+- **Data** — `$DSH_HOME/touchstone/bench.json` (`DSH_HOME` defaults to `~/.dsh`); stores cases, candidates, and the last **40 runs**.
+- To reset, delete that file (it is recreated).
 
-## 它不做什么（边界）
+## What it does *not* do (limits)
 
-- 这是**文本层**评测：比的是"同一 prompt 下模型输出的差别"，**不是**跑完整 agent 回路。
-  - 对「改提示词 / 改家规 / 换预设文案」这类改动**最合适**；
-  - 对「改工具实现」这种要跑真实副作用的改动，它给不了证据。
-- **裁判也是模型**，会有偏差；规则检查才最可复现。别把分数当判决，把它当证据。
-- 分数只说明**你这批用例上**的表现——用例写得偏，尺子就量歪。
+- This is a **text-level** evaluation: it compares "the model's output under the same prompt", **not** a full agent loop.
+  - Best for: **changing a prompt / a house rule / a preset's wording.**
+  - Not for: "changing a tool's implementation" that needs real side effects — it gives no evidence there.
+- **The judge is also a model** and has bias; rule checks are the most reproducible. Treat the score as evidence, not a verdict.
+- The score only speaks for **your cases** — write them poorly and you measure the wrong thing.
 
-## 常见问题
+## FAQ
 
-**Q：跑一次要多久、贵不贵？**
-A：每条「用例 × 方案」一次模型调用（模型裁判再加一次）。用例少、输出短，就快且省。先用一两条用例试水。
+**Q: How long / how expensive is a run?**
+A: One model call per case × candidate (plus one more if you use an LLM judge). Few cases, short outputs → fast and cheap. Start with one or two cases.
 
-**Q：能不能比"两个候选"而不是"候选 vs 现状"？**
-A：目前每个候选都单独和「现状」比；两个候选的横向对比看两张对账表即可（同一批用例、同一现状基线）。
+**Q: Can I compare two candidates instead of candidate-vs-current?**
+A: Each candidate is compared against "current". For candidate-vs-candidate, read the two reports side by side (same cases, same baseline).
 
-**Q：为什么我的输入框里中文会乱码？**
-A：开发早期的版本有过这个 bug——输入框曾写成"每敲一键就发请求再回填"，会打断中文输入法。**本版已修**：打字只动本地、失焦才落盘。
+**Q: Why did my input box garble Chinese?**
+A: An early development build had this bug — the input posted on every keystroke and wrote the server value back, which fights the IME. **This version is fixed**: text edits stay local and save on blur.
 
-**Q：会不会动我的文件？**
-A：不会。它只读配置、只调模型。
+**Q: Will it touch my files?**
+A: No. It only reads config and calls the model.
 
-## 开发
+## Development
 
 ```shell
 npm install
 npm run build      # src/index.ts -> lib/index.js ; src/client/index.ts -> lib/client.js
 npm run typecheck
-npm test           # 纯逻辑单测（对构建产物跑，不需要 DSH）
+npm test           # pure-logic unit tests (run against the built bundles; no DSH needed)
 ```
 
-- **Host 半边**（`src/index.ts`）：存储 + 跑测引擎 + 路由 + 设置 schema。
-- **Browser 半边**（`src/client/index.ts`）：设置页「试金石」。
-- 想热改本地调试：`node build.mjs --watch`，然后刷新页面（client 半刷新即生效）。
-
-## 作者与许可
-
-- **作者：Hwayn（幻弈）**
-- **协作者：Yucheng Xiao（肖宇成）** —— 方向、需求、测试
-- License：MIT
+- **Host half** (`src/index.ts`): storage + run engine + routes + settings schema.
+- **Browser half** (`src/client/index.ts`): the "试金石" settings page.
+- Local iteration: `node build.mjs --watch`, then refresh the page (client half reloads instantly).
 
 ---
 
-## English
+## Authors & license
 
-**dsh-touchstone** adds the missing *evaluation* half of self-evolution to DeepSeek Harness. Define a suite of **golden cases** (a prompt plus rule / LLM-judge checks) and a **candidate** prompt change, run both the candidate and the built-in "current" baseline against the same cases, score them, and get a before→after report — **keep it if it got better, revert if it did not.**
-
-It talks to the model through **`ctx.llm.stream()` only**, never patches the harness, and works on both DSH 0.1.x (web) and 0.2 (desktop).
-
-```shell
-dsh plugin --profile desktop add dsh-touchstone
-```
-
-Open **Settings → 🪨 试金石**, add a case (prompt + checks), add a candidate (the prompt you want to try), hit **跑一遍 (Run)**, and read the **对账 (Report)**. Data lives in `$DSH_HOME/touchstone/bench.json`.
+- **Author: Hwayn (幻弈)**
+- **Collaborator: Yucheng Xiao (肖宇成)** — direction, requirements, testing
+- License: MIT
