@@ -83,7 +83,7 @@ function check(name, cond) {
 // 5 · firstLine
 {
   check("firstLine grabs the first non-empty line", firstLine("\n\n# 标题\n正文") === "# 标题");
-  check("firstLine never returns empty", firstLine("   ") === "(无标题)");
+  check("firstLine never returns empty", firstLine("   ") === "(untitled)");
 }
 
 // 6 · the client bundle still declares the right id and an apply()

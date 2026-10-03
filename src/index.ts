@@ -2,15 +2,19 @@
 /**
  * dsh-touchstone — Host half.
  *
- * 《试金石》给「自改造」补上评测这一环。Host 半边就是那台"测试台"：
+ * Touchstone closes the *evaluation* half of DSH's self-evolution. This half is the test bench:
  *
- *   1. **金标准用例**（case）：一句 prompt + 若干检查项（必须含 / 必须不含 / 正则 / 模型裁判）。
- *   2. **对照方案**（variant）：一份「要试的 system 提示词」——现状(不改) / 追加 / 整篇替换。
- *   3. **跑**：同一条用例，分别按「现状」和「候选方案」各调一次模型，收全文与用量。
- *   4. **打分**：规则检查本地判定；模型裁判另调一次模型，只要 PASS / FAIL。
- *   5. **对账**：逐条用例给出 改动前 vs 改动后 的得分差，并给整体结论——好就留、不好就撤。
+ *   1. **Cases** — a prompt plus checks (must contain / must not contain / regex / LLM judge).
+ *   2. **Candidates** — a system prompt to try, either appended to the current one or replacing it;
+ *      the control is the built-in "current (no change)".
+ *   3. **Run** — for each case × candidate, call the model once with the candidate's system prompt
+ *      and the case's user prompt, and collect the text and usage.
+ *   4. **Score** — rule checks decide in-process; the LLM judge costs one more model call and only
+ *      has to answer PASS or FAIL.
+ *   5. **Report** — per-case before → after deltas plus an overall verdict: keep it, or revert.
  *
- * 引擎只借 `ctx.llm.stream()` 这一条公开缝，不改 harness 本体，也不依赖任何内部服务。
+ * The engine only borrows the public `ctx.llm.stream()` seam; it never patches the harness and
+ * depends on no internal services, so it works on both DSH 0.1.x and 0.2.
  */
 import z from "@deepseek-ai/schemastery";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -81,18 +85,19 @@ export interface State {
   runs: RunRecord[];
 }
 
-export const BASELINE_VARIANT: Variant = { id: "baseline", name: "现状（不改）", mode: "baseline", note: "对照组：不加任何新提示词" };
+/** The built-in control. Its display name is localized by the client; `name` here is a fallback. */
+export const BASELINE_VARIANT: Variant = { id: "baseline", name: "current (no change)", mode: "baseline" };
 
 export const TouchstoneSchema = z
   .object({
-    provider: z.string().default("deepseek-official").description("用哪个 provider 跑用例（留空用 harness 默认）"),
-    model: z.string().default("deepseek-flash").description("用哪个模型跑用例"),
-    judgeProvider: z.string().default("").description("裁判模型 provider（留空=和上面同一个）"),
-    judgeModel: z.string().default("").description("裁判模型（留空=和上面同一个）"),
-    temperature: z.number().default(0.2).description("跑用例的温度（越低越可复现）"),
-    maxOutput: z.number().default(DEFAULT_MAX_OUTPUT).description("每条用例最多生成多少 token"),
+    provider: z.string().default("deepseek-official").description("Provider used to run cases (blank = the harness default)"),
+    model: z.string().default("deepseek-flash").description("Model used to run cases"),
+    judgeProvider: z.string().default("").description("Provider for the judge model (blank = same as the runner)"),
+    judgeModel: z.string().default("").description("Judge model (blank = same as the runner)"),
+    temperature: z.number().default(0.2).description("Sampling temperature for runs (lower = more reproducible)"),
+    maxOutput: z.number().default(DEFAULT_MAX_OUTPUT).description("Max output tokens per case"),
   })
-  .description("dsh-touchstone：用金标准用例评测一次改动到底有没有变好");
+  .description("dsh-touchstone: evaluate whether a change actually improved the agent");
 
 interface SettingsLike {
   get(ns: string): unknown;
@@ -120,7 +125,7 @@ const CFG_DEFAULTS: Cfg = {
   maxOutput: DEFAULT_MAX_OUTPUT,
 };
 
-// ── the test bench (storage) ────────────────────────────────────────────────
+// ── the bench (storage) ─────────────────────────────────────────────────────
 let state: State = { cases: [], variants: [], runs: [] };
 
 function benchFile(): string {
@@ -148,7 +153,7 @@ function persist(): void {
       mkdirSync(dirname(benchFile()), { recursive: true });
       writeFileSync(benchFile(), JSON.stringify(state, null, 1), "utf8");
     } catch {
-      /* convenience, never fatal */
+      /* the bench is a convenience, never a failure */
     }
   }, 150);
 }
@@ -158,7 +163,7 @@ function readCfg(settings: SettingsLike | undefined): Cfg {
     const raw = settings?.get(SETTINGS_NAMESPACE);
     if (raw && typeof raw === "object") return { ...CFG_DEFAULTS, ...(raw as Cfg) };
   } catch {
-    /* service may not be attached yet */
+    /* the settings service may not be attached yet */
   }
   return CFG_DEFAULTS;
 }
@@ -166,7 +171,7 @@ function readCfg(settings: SettingsLike | undefined): Cfg {
 // ── pure helpers (exercised by the test suite) ──────────────────────────────
 export function firstLine(text: string, max = 60): string {
   const line = String(text ?? "").split(/\r?\n/).map((r) => r.trim()).find((r) => r.length) ?? "";
-  return line.length > max ? line.slice(0, max) + "…" : line || "(无标题)";
+  return line.length > max ? line.slice(0, max) + "…" : line || "(untitled)";
 }
 
 /** Compose the system prompt a variant asks for, over the case's own base text. */
@@ -191,18 +196,18 @@ export function scoreLocal(output: string, checks: Check[]): Score[] {
     if (check.kind === "llm") continue;
     if (check.kind === "must") {
       const pass = text.toLowerCase().includes(String(check.value ?? "").toLowerCase());
-      out.push({ checkId: check.id, kind: check.kind, pass, detail: pass ? "命中" : `没找到「${check.value}」` });
+      out.push({ checkId: check.id, kind: check.kind, pass, detail: pass ? "found" : `missing "${check.value}"` });
     } else if (check.kind === "mustNot") {
       const hit = text.toLowerCase().includes(String(check.value ?? "").toLowerCase());
-      out.push({ checkId: check.id, kind: check.kind, pass: !hit, detail: hit ? `不该出现「${check.value}」` : "干净" });
+      out.push({ checkId: check.id, kind: check.kind, pass: !hit, detail: hit ? `must not contain "${check.value}"` : "clean" });
     } else if (check.kind === "regex") {
       let pass = false;
       let detail = "";
       try {
         pass = new RegExp(String(check.value ?? ""), "i").test(text);
-        detail = pass ? "匹配" : `不匹配 /${check.value}/`;
+        detail = pass ? "matched" : `no match /${check.value}/`;
       } catch (error) {
-        detail = `正则写错了：${String((error as Error)?.message ?? error)}`;
+        detail = `invalid regex: ${String((error as Error)?.message ?? error)}`;
       }
       out.push({ checkId: check.id, kind: check.kind, pass, detail });
     }
@@ -264,6 +269,7 @@ function userMessage(text: string): unknown {
   };
 }
 
+/** One model call: stream the text and usage back out. */
 export async function callModel(
   llm: LlmLike,
   cfg: Cfg,
@@ -289,6 +295,7 @@ export async function callModel(
     else if (chunk?.type === "usage") usage = chunk.usage;
     else if (chunk?.type === "finish") finish = chunk.reason?.kind ?? "stop";
   }
+  // Prefer the deltas; fall back to assembled blocks if a provider only emits those.
   return { text: text || blocks, finish, usage };
 }
 
@@ -301,9 +308,10 @@ async function judge(llm: LlmLike, cfg: Cfg, rubric: string, output: string, sig
   const { text } = await callModel(llm, judgeCfg, { system, user, temperature: 0, maxOutput: JUDGE_MAX_OUTPUT, signal });
   const head = text.trim().split(/\r?\n/)[0]?.toUpperCase() ?? "";
   const pass = head.includes("PASS") && !head.includes("FAIL");
-  return { pass, detail: text.trim().slice(0, 200) || "(裁判没说话)" };
+  return { pass, detail: text.trim().slice(0, 200) || "(the judge said nothing)" };
 }
 
+/** Run one case against one variant: call the model, then score rule checks and any LLM judge. */
 export async function runCase(llm: LlmLike, cfg: Cfg, testCase: Case, variant: Variant, signal?: AbortSignal): Promise<CaseRun> {
   const system = composeSystem(testCase.system, variant);
   const base: CaseRun = { caseId: testCase.id, variantId: variant.id, ok: false, output: "", finish: "", usage: null, scores: [], total: null };
@@ -373,7 +381,7 @@ export function apply(ctx: HostContext): void {
             };
             const cfg = readCfg(settingsOf());
             try {
-              // GET /dsh-touchstone/state — cases, variants, and run summaries.
+              // GET /dsh-touchstone/state — cases, candidates, and run summaries.
               if (req.method === "GET" && url.pathname === `${ROUTE_PREFIX}/state`) {
                 return ok(200, {
                   ok: true,
@@ -390,7 +398,7 @@ export function apply(ctx: HostContext): void {
                 const id = url.searchParams.get("id");
                 if (id) {
                   const run = state.runs.find((r) => r.id === id);
-                  return run ? ok(200, { ok: true, run }) : ok(404, { ok: false, error: "没找到这次跑测" });
+                  return run ? ok(200, { ok: true, run }) : ok(404, { ok: false, error: "run not found" });
                 }
                 return ok(200, { ok: true, runs: state.runs.map((r) => ({ id: r.id, at: r.at, label: r.label, count: r.results.length })) });
               }
@@ -409,7 +417,7 @@ export function apply(ctx: HostContext): void {
                     : [],
                   enabled: incoming?.enabled !== false,
                 };
-                if (!one.prompt.trim()) return ok(400, { ok: false, error: "用例要有 prompt" });
+                if (!one.prompt.trim()) return ok(400, { ok: false, error: "a case needs a prompt" });
                 const at = state.cases.findIndex((c) => c.id === one.id);
                 if (at >= 0) state.cases[at] = one; else state.cases.push(one);
                 persist();
@@ -430,13 +438,13 @@ export function apply(ctx: HostContext): void {
                 const incoming = body?.variant ?? body;
                 const one: Variant = {
                   id: String(incoming?.id || randomUUID()),
-                  name: String(incoming?.name ?? "").slice(0, 120) || "候选方案",
+                  name: String(incoming?.name ?? "").slice(0, 120) || "candidate",
                   note: incoming?.note ? String(incoming.note) : undefined,
                   mode: incoming?.mode === "replace" ? "replace" : "append",
                   systemText: String(incoming?.systemText ?? ""),
                   temperature: Number.isFinite(Number(incoming?.temperature)) ? Number(incoming.temperature) : undefined,
                 };
-                if (one.id === BASELINE_VARIANT.id) return ok(400, { ok: false, error: "「现状」是内建的，不能改" });
+                if (one.id === BASELINE_VARIANT.id) return ok(400, { ok: false, error: "the built-in control cannot be edited" });
                 const at = state.variants.findIndex((v) => v.id === one.id);
                 if (at >= 0) state.variants[at] = one; else state.variants.push(one);
                 persist();
@@ -451,15 +459,15 @@ export function apply(ctx: HostContext): void {
                 return ok(200, { ok: true, count: state.variants.length });
               }
 
-              // POST /dsh-touchstone/run — run baseline + each selected variant across the enabled cases.
+              // POST /dsh-touchstone/run — run baseline + each selected candidate across the enabled cases.
               if (req.method === "POST" && url.pathname === `${ROUTE_PREFIX}/run`) {
                 const llm = llmOf();
-                if (!llm || typeof llm.stream !== "function") return ok(503, { ok: false, error: "llm 服务还没就绪" });
+                if (!llm || typeof llm.stream !== "function") return ok(503, { ok: false, error: "the llm service is not ready" });
                 const body = await readBody(req);
                 const wantedVariants: string[] = Array.isArray(body?.variantIds) ? body.variantIds.map(String) : state.variants.map((v) => v.id);
                 const caseIds: string[] | null = Array.isArray(body?.caseIds) ? body.caseIds.map(String) : null;
                 const targetCases = state.cases.filter((c) => c.enabled !== false && (!caseIds || caseIds.includes(c.id)));
-                if (!targetCases.length) return ok(400, { ok: false, error: "没有启用的用例可跑" });
+                if (!targetCases.length) return ok(400, { ok: false, error: "no enabled cases to run" });
                 const variants: Variant[] = [BASELINE_VARIANT, ...state.variants.filter((v) => wantedVariants.includes(v.id))];
                 const result: CaseRun[] = [];
                 for (const variant of variants) {
@@ -470,7 +478,7 @@ export function apply(ctx: HostContext): void {
                 const record: RunRecord = {
                   id: randomUUID(),
                   at: Date.now(),
-                  label: String(body?.label ?? "").slice(0, 120) || `${variants.length - 1} 个候选 × ${targetCases.length} 条用例`,
+                  label: String(body?.label ?? "").slice(0, 120) || `${variants.length - 1} candidate(s) × ${targetCases.length} case(s)`,
                   provider: cfg.provider,
                   model: cfg.model,
                   caseNames: Object.fromEntries(targetCases.map((c) => [c.id, c.name])),
@@ -483,10 +491,10 @@ export function apply(ctx: HostContext): void {
                 return ok(200, { ok: true, run: record });
               }
 
-              // GET /dsh-touchstone/report?run=&baseline=&variant= — before→after for one variant.
+              // GET /dsh-touchstone/report?run=&variant= — before→after for one candidate.
               if (req.method === "GET" && url.pathname === `${ROUTE_PREFIX}/report`) {
                 const run = state.runs.find((r) => r.id === url.searchParams.get("run"));
-                if (!run) return ok(404, { ok: false, error: "没找到这次跑测" });
+                if (!run) return ok(404, { ok: false, error: "run not found" });
                 const variantId = url.searchParams.get("variant") ?? "";
                 const baseline = run.results.filter((r) => r.variantId === BASELINE_VARIANT.id);
                 const candidate = run.results.filter((r) => r.variantId === variantId);

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-10-03
+
+- **Localized UI**: the settings page follows the browser language — Chinese UI in Chinese, everyone else in English.
+- **Source comments translated to English** (host and browser halves) for a global readership.
+- Settings schema descriptions are now English.
+- No behavior change to the evaluation engine.
+
 ## 0.1.0 — 2026-10-03
 
 First release. 《试金石》：给 DSH 的「自改造」补上评测这一环。

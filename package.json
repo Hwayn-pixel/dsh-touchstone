@@ -1,6 +1,6 @@
 {
   "name": "dsh-touchstone",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH 试金石：给「自改造」补上评测这一环——用一套金标准用例，把改动前 vs 改动后跑一遍、打分、对比，好就留、不好就撤。",
   "type": "module",
   "main": "lib/index.js",
